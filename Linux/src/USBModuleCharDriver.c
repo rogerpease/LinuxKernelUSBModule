@@ -12,7 +12,7 @@
 // https://android.googlesource.com/kernel/msm/+/android-lego-6.0.1_r0.6/drivers/i2c/busses/i2c-tiny-usb.c
 
 //
-// How to use:
+// How I built this:
 //
 //    Get a Seeeduino Xiao SAMD21 (about $10 on Amazon). 
 //    Install Arduino GUI and, with it, install AdaFruit TinyUSB Library 3.6.0
@@ -25,24 +25,27 @@
 //    % i2cdetect /dev/i2c-0        should scan the I2C bus of the Xiao (might try connecting an LCD1602 to give it something to connect to). 
 //    From the trace from above you should see lines like  
 
-//ffff9e00c0fb4180 1657276607 S Ci:3:008:0 s c1 01 0000 0000 0004 4 <
-//ffff9e00c0fb4180 1657277850 C Ci:3:008:0 0 4 = 0100ff8e
-//ffff9e00c0fb4180 1658688197 S Co:3:008:0 s 41 07 0000 0008 0000 0       Checks i2c a 
-//ffff9e00c0fb4180 1659084781 C Co:3:008:0 0 0
-//ffff9e00c0fb4180 1659084918 S Ci:3:008:0 s c1 03 0000 0000 0001 1 <
-//ffff9e00c0fb4180 1659086047 C Ci:3:008:0 0 1 = 01
-//ffff9e00c0fb4180 1659086236 S Co:3:008:0 s 41 07 0000 0009 0000 0
-//ffff9e00c0fb4180 1659087182 C Co:3:008:0 0 0
-//ffff9e00c0fb4180 1659087214 S Ci:3:008:0 s c1 03 0000 0000 0001 1 <
-//ffff9e00c0fb4180 1659089366 C Ci:3:008:0 0 1 = 02
-
+// ffff9e00c0fb4180 1657276607 S Ci:3:008:0 s c1 01 0000 0000 0004 4 <
+// ffff9e00c0fb4180 1657277850 C Ci:3:008:0 0 4 = 0100ff8e
+// ffff9e00c0fb4180 1658688197 S Co:3:008:0 s 41 07 0000 0008 0000 0       Checks i2c a 
+// ffff9e00c0fb4180 1659084781 C Co:3:008:0 0 0
+// ffff9e00c0fb4180 1659084918 S Ci:3:008:0 s c1 03 0000 0000 0001 1 <
+// ffff9e00c0fb4180 1659086047 C Ci:3:008:0 0 1 = 01
+// ffff9e00c0fb4180 1659086236 S Co:3:008:0 s 41 07 0000 0009 0000 0
+// ffff9e00c0fb4180 1659087182 C Co:3:008:0 0 0
+// ffff9e00c0fb4180 1659087214 S Ci:3:008:0 s c1 03 0000 0000 0001 1 <
+// ffff9e00c0fb4180 1659089366 C Ci:3:008:0 0 1 = 02
 // 
-//    In the i2c-tiny-USB Arduino, after i2c_usb.begin() in setup() add:    TinyUSBDevice.setID(0xaaaa,0x0b0b);
+//    In the i2c-tiny-usb Arduino program, after i2c_usb.begin() in setup() add:    TinyUSBDevice.setID(0xaaaa,0x0b0b);
+//
 //    Recompile and reflash. You may need to short the bootloader pins to force the Xiao into bootloader mode.
 //    Blacklist the i2c-tiny-usb driver with a file in /etc/modprobe.d 
-//    Replug the i2c device in. It should come up with the new VID/PID.  
 //
-//    Compile this module then run Test.py. 
+//    % make clean; make 
+//    % insmod USBModuleCharDriver. 
+//    Replug the i2c device in. Run 
+//    % lsusb           (and verify the aaaa:0b0b appears). 
+//    Run Test.py. 
 //
 
 
@@ -50,22 +53,7 @@
 //00:                         08 -- 0a -- -- 0d -- --
 
 
-//
-// Just like there is a difference between a block device and a disk, there is a difference between a 
-// USB Device, a USB Driver, and a USB interface. 
-//  The USB driver is the thing I load into the kernel. 
-//  The USB device is the thing I plug into the machine. 
-//  A device can support multiple interfaces. Serial, Audio, MIDI, disk drive, etc. Most are pre-defined. 
-// At plug-in time, probe() is called iff my_usb_table holds an entry for this interface. 
-//
-//   https://www.kernel.org/doc/html/v4.14/driver-api/usb/usb.html
-//
-
 #include <linux/usb.h> 
-
-void my_delayed_work_function(struct work_struct *);
-
-#define MAJOR_DEV_NUM 228 
 
 #define USB_SKEL_VENDOR_ID  (0xaaaa)
 #define USB_SKEL_PRODUCT_ID (0x0b0b)
@@ -73,34 +61,50 @@ void my_delayed_work_function(struct work_struct *);
 #define COMMAND_LEN        (64)
 #define RESULT_BUFFER_LEN  (256)
 
+//
+// In a "real" implementation I would of course build an array or linked list of these so multiple users could manage their own i2c modules. 
+// This would be worth doing for a shared resource like a GPU.  
+// 
+
 typedef struct { 
 
+  int fh_index; 
   int minorDevice;
   int byteStartIndex;  
+
   char command[COMMAND_LEN];  
 
   char resultBuffer[RESULT_BUFFER_LEN];  
   int resultBeginIndex; 
   int resultEndIndex; 
 
+
 } MyFHPrivateData_t; 
 
 
 typedef struct { 
 
-      struct usb_device *dev; 
-      char probed; 
-      int char_driver_setup; 
+    struct usb_device *dev; 
 
-      spinlock_t lock; 
-      struct cdev my_cdev;
+    char probed; 
+    int char_driver_setup; 
+
+    int fh_open; 
+
+    spinlock_t lock; 
+    struct cdev my_cdev;
 
 } my_usb_device_t; 
 
-void setup_char_driver(void);
+my_usb_device_t * my_usb_device; 
+
+
+
+
+int setup_char_driver(void);
+void destroy_char_driver(void);
 static int charDriverFileOpen(struct inode *inode, struct file *filp);
 
-my_usb_device_t * my_usb_device; 
 
 static struct usb_device_id my_usb_table [] = {
         { USB_DEVICE(USB_SKEL_VENDOR_ID, USB_SKEL_PRODUCT_ID) },
@@ -122,7 +126,10 @@ static int my_usb_probe(struct usb_interface *interface, const struct usb_device
         (id->idProduct == USB_SKEL_PRODUCT_ID)) 
     { 
 
-        if (!my_usb_device->char_driver_setup) { pr_info("Setting char driver"); setup_char_driver(); }
+        if (!my_usb_device->char_driver_setup) { 
+            if (setup_char_driver() < 0)  
+                pr_info("Could not set up char driver.");  
+         }
 
         struct usb_host_interface *iface_desc;
         struct usb_endpoint_descriptor *epd;
@@ -161,20 +168,27 @@ static int my_usb_probe(struct usb_interface *interface, const struct usb_device
  
 }
 
-// =======================================================================================================
 
 static int charDriverFileOpen(struct inode *inode, struct file *filp)
 {
+    int count = 0; 
+
+    pr_info("Open called");  
+    if (my_usb_device->fh_open) { pr_err("Already open"); return -ENOSPC; } 
+    pr_info("Will open File");  
+
+    my_usb_device->fh_open = 1; 
 
     MyFHPrivateData_t * myFHPrivateData;
-
-    myFHPrivateData = (MyFHPrivateData_t *) kmalloc(sizeof(MyFHPrivateData_t),GFP_KERNEL); 
-    filp->private_data = (void *) myFHPrivateData; 
-
+    
+    myFHPrivateData = (MyFHPrivateData_t *) kzalloc(sizeof(MyFHPrivateData_t),GFP_KERNEL); 
     myFHPrivateData->minorDevice = iminor(inode); 
     myFHPrivateData->byteStartIndex = 0; 
     myFHPrivateData->resultBeginIndex = 0; 
     myFHPrivateData->resultEndIndex = 0; 
+
+    filp->private_data = (void *) myFHPrivateData; 
+    pr_info("Opening File");  
   
     return 0;
 
@@ -183,6 +197,7 @@ static int charDriverFileOpen(struct inode *inode, struct file *filp)
 static int charDriverFileClose(struct inode *inode, struct file *filp)
 {
 
+    my_usb_device->fh_open = 0; 
     kfree(filp->private_data); 
     return 0;
 
@@ -239,39 +254,67 @@ static const struct file_operations my_cdev_fops = {
 
 };
 
+#define DEVICE_NAME "simpleusb"
+
+static struct class *my_class;
+static struct device *my_device;
+static int major_number; 
 
 
-void setup_char_driver()
-{
+int setup_char_driver() {
+
    pr_info("Setup Char driver"); 
 
    dev_t dev;
-  
-   dev = MKDEV(MAJOR_DEV_NUM, 0);
-   pr_info("Char Driver initialized for Major Device %d\n",MAJOR_DEV_NUM);
 
-   // Allocate Device Numbers 
-   int ret = register_chrdev_region(dev, 1, "simpleCharacterDriver");
-   if (ret < 0) {
-       pr_info("Unable to allocate Major Device %d\n", MAJOR_DEV_NUM);
-       return ;
+   major_number = register_chrdev(0, DEVICE_NAME, &my_cdev_fops);
+   if (major_number < 0)
+   {
+       pr_err("Failed to register char device"); 
+       return major_number; 
    }
 
-   int minorDevice = 0; 
+   pr_info("Major device %d",major_number); 
 
-   cdev_init(&(my_usb_device->my_cdev), &my_cdev_fops);
+   my_class = class_create(DEVICE_NAME);
 
-   dev = MKDEV(MAJOR_DEV_NUM, minorDevice);
-   ret = cdev_add(&(my_usb_device->my_cdev), dev, 1);
- 
-   if (ret) pr_info("Ret %d\n",ret); 
- 
+   if (IS_ERR(my_class))
+   {
+       unregister_chrdev(major_number,DEVICE_NAME); 
+       pr_err("Failed to create class"); 
+       return PTR_ERR(my_class);  
+   } 
+
+
+   my_device = device_create(my_class, NULL, MKDEV(major_number,0), NULL, DEVICE_NAME);
+
+   if (IS_ERR(my_device)) {
+        class_destroy(my_class);
+        unregister_chrdev(major_number, DEVICE_NAME);
+        printk(KERN_ALERT "Failed to create device\n");
+        return PTR_ERR(my_device);
+   }
+
    my_usb_device->char_driver_setup = 1; 
 
+   return 0;
 } 
+
+void destroy_char_driver() {
+
+   if (!my_usb_device->char_driver_setup)  return; 
+
+   device_destroy(my_class,MKDEV(major_number,0)); 
+   class_destroy(my_class);
+   unregister_chrdev(major_number, DEVICE_NAME);
+
+   my_usb_device->char_driver_setup = 0; 
+
+}
 
 static void my_usb_disconnect(struct usb_interface *interface)
 {
+    destroy_char_driver(); 
     int minor = interface->minor; 
     pr_info("Interface disconnected %d",minor); 
 }
@@ -368,22 +411,13 @@ int issue_urb(char * usbmonline,MyFHPrivateData_t *myFHPrivateData)
     if (status == 0) {return 1;} else return 0; 
 }
 
-struct delayed_work my_delayed_work_struct; 
-
-int work_delay = 1000;
-
-void my_delayed_work_function(struct work_struct *)
-{
-
-    schedule_delayed_work(&my_delayed_work_struct, work_delay);
-
-}
 
 static int __init my_module_init(void)
 {
     pr_info("USBModule: my_module_init called "); 
 
-    my_usb_device = (my_usb_device_t *) kzalloc(sizeof(my_usb_device),GFP_KERNEL); 
+    // Really not sure why but kzalloc is not zeroing-out things. 
+    my_usb_device = (my_usb_device_t *) kmalloc(sizeof(my_usb_device),GFP_KERNEL); 
  
     if (my_usb_device == NULL)
     {
@@ -391,13 +425,15 @@ static int __init my_module_init(void)
        return -ENOMEM; 
     } 
 
+    my_usb_device->fh_open           = 0; 
     my_usb_device->char_driver_setup = 0; 
-
-    my_usb_device->probed = 0; 
+    my_usb_device->probed            = 0; 
 
     spin_lock_init(&my_usb_device->lock);
 
     int result = usb_register(&skel_driver);
+ 
+
 
     if (result < 0) {
         pr_err("usb_register failed for the %s driver. Error number %d\n",
@@ -405,8 +441,6 @@ static int __init my_module_init(void)
         return -1;
     }
 
-    INIT_DELAYED_WORK(&my_delayed_work_struct, my_delayed_work_function); 
-    schedule_delayed_work(&my_delayed_work_struct, work_delay);
 
     pr_info("USBModule: my_module_init done"); 
     return 0; 
@@ -417,15 +451,8 @@ static int __init my_module_init(void)
 static void __exit my_module_exit(void)
 {
 
-   pr_info("Cancelling Delayed work"); 
-   cancel_delayed_work(&my_delayed_work_struct);
-
-   pr_info("Cancelling Char "); 
    if (my_usb_device->char_driver_setup) 
-   { 
-       cdev_del(&(my_usb_device->my_cdev));
-       unregister_chrdev_region(MKDEV(MAJOR_DEV_NUM, 0), 1);
-   } 
+       destroy_char_driver();
 
    pr_info("Deregistering "); 
    usb_deregister(&skel_driver);
